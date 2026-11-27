@@ -1,11 +1,15 @@
 """Phase 2 ORM models: payment discrepancy cases, evidence, timeline, and curated routing."""
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.voice import CaseExtractionDraft, VoiceRecording
 
 
 def _utcnow() -> datetime:
@@ -48,6 +52,16 @@ class GrievanceCase(Base):
         back_populates="grievance_case",
         cascade="all, delete-orphan",
         order_by="CaseTimelineEvent.created_at.asc()",
+    )
+    voice_recordings: Mapped[list["VoiceRecording"]] = relationship(
+        back_populates="grievance_case",
+        cascade="all, delete-orphan",
+        order_by="VoiceRecording.recording_order.asc()",
+    )
+    extraction_drafts: Mapped[list["CaseExtractionDraft"]] = relationship(
+        back_populates="grievance_case",
+        cascade="all, delete-orphan",
+        order_by="CaseExtractionDraft.created_at.asc()",
     )
 
 
