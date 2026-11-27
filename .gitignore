@@ -1,0 +1,40 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+dist/
+web/dist/
+web/.vite/
+*.tsbuildinfo
+
+# Local databases, uploaded evidence, and audio recordings
+*.db
+*.sqlite
+*.sqlite3
+/data/
+/evidence_data/
+/uploads/
+*.wav
+*.webm
+*.mp3
+*.ogg
+*.opus
+*.m4a
+*.flac
+*.aac
+*.log
