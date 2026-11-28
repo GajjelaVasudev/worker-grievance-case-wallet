@@ -19,6 +19,19 @@ def _utcnow() -> datetime:
 
 def serialize_voice_recording(recording: VoiceRecording) -> dict:
     """Serialize recording metadata without exposing internal storage keys or paths."""
+    has_raw = bool(recording.raw_transcript and recording.raw_transcript.strip())
+    has_edit = bool(recording.worker_edited_transcript and recording.worker_edited_transcript.strip())
+    if recording.is_demo_sample:
+        transcript_origin = "demo_sample"
+    elif has_raw and has_edit:
+        transcript_origin = "sarvam_asr_with_worker_edits"
+    elif has_raw:
+        transcript_origin = "sarvam_asr"
+    elif has_edit:
+        transcript_origin = "manual_worker_entry"
+    else:
+        transcript_origin = "none"
+
     return {
         "id": recording.id,
         "case_id": recording.case_id,
@@ -33,12 +46,14 @@ def serialize_voice_recording(recording: VoiceRecording) -> dict:
         "asr_model": recording.asr_model,
         "asr_request_id": recording.asr_request_id,
         "transcription_status": recording.transcription_status,
+        "transcript_origin": transcript_origin,
         "detected_language": recording.detected_language,
         "language_probability": recording.language_probability,
         "raw_transcript": recording.raw_transcript,
         "asr_transcribed_at": recording.asr_transcribed_at.isoformat() if recording.asr_transcribed_at else None,
         "worker_edited_transcript": recording.worker_edited_transcript,
         "worker_edited_at": recording.worker_edited_at.isoformat() if recording.worker_edited_at else None,
+        "effective_transcript": recording.worker_edited_transcript if has_edit else recording.raw_transcript,
         "is_demo_sample": recording.is_demo_sample,
         "sarvam_consent_granted": recording.sarvam_consent_granted,
         "sarvam_consented_at": recording.sarvam_consented_at.isoformat() if recording.sarvam_consented_at else None,

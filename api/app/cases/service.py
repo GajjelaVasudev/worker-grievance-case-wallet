@@ -83,8 +83,33 @@ def _effective_details_model(case: GrievanceCase) -> PaymentDiscrepancyDetails:
 
 def serialize_case(db: Session, case: GrievanceCase) -> dict:
     """Build complete API representation for a Payment Discrepancy case."""
+    from app.voice.extraction import serialize_extraction_draft
+    from app.voice.storage import serialize_voice_recording
+
     active_details = _effective_details_model(case)
+    active_dict = active_details.model_dump()
     missing_fields = detect_missing_payment_fields(active_details)
+    # Surface unresolved grounding/clarification requirements from extraction drafts
+    seen_clarifications = set()
+    for draft in reversed(case.extraction_drafts):
+        for field_name, claim in (draft.stripped_ungrounded_fields or {}).items():
+            if field_name in seen_clarifications:
+                continue
+            if field_name in active_dict and active_dict[field_name] is not None:
+                continue
+            seen_clarifications.add(field_name)
+            missing_fields.insert(
+                0,
+                {
+                    "field": field_name,
+                    "importance": "clarification_required",
+                    "reason": claim.get("reason"),
+                    "prompt": (
+                        f"Clarification required for '{field_name}': {claim.get('reason')} "
+                        "Please review and enter the correct value if known."
+                    ),
+                },
+            )
     checklist = evaluate_evidence_checklist(case.category, list(case.evidence_items))
     routing = match_verified_routes(
         db,
@@ -124,6 +149,8 @@ def serialize_case(db: Session, case: GrievanceCase) -> dict:
         ],
         "evidence_checklist": checklist,
         "routing": routing,
+        "voice_recordings": [serialize_voice_recording(rec) for rec in case.voice_recordings],
+        "extraction_drafts": [serialize_extraction_draft(d) for d in case.extraction_drafts],
         "timeline": [
             {
                 "id": ev.id,

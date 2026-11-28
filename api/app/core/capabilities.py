@@ -57,7 +57,7 @@ def build_capabilities_payload(settings: Settings) -> dict:
 
     return {
         "app_name": settings.app_name,
-        "phase": "phase_2_core_grievance_engine",
+        "phase": "phase_3_task4_gemini_extraction",
         "wallet_mode": "single_local_wallet",
         "public_demo_mode": settings.public_demo_mode,
         "hero_category": "payment_discrepancy",

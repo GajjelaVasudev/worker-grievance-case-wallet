@@ -1,4 +1,4 @@
-"""Abstract interfaces for independently configurable ASR and LLM providers."""
+"""Abstract interfaces and shared result/error types for ASR and LLM providers."""
 
 from dataclasses import dataclass
 from typing import Protocol
@@ -15,6 +15,37 @@ class ProviderCapability:
     model: str | None = None
 
 
+@dataclass(frozen=True)
+class TranscriptionResult:
+    """Normalized speech-to-text output from an ASR provider."""
+
+    provider: str
+    model: str
+    mode: str
+    transcript: str
+    request_id: str | None = None
+    language_code: str | None = None
+    language_probability: float | None = None
+
+
+class ASRProviderError(RuntimeError):
+    """Safe, key-redacted error raised when speech-to-text fails."""
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        user_message: str,
+        http_status: int = 502,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(user_message)
+        self.error_code = error_code
+        self.user_message = user_message
+        self.http_status = http_status
+        self.retryable = retryable
+
+
 class ASRProvider(Protocol):
     """Speech-to-text adapter contract."""
 
@@ -25,6 +56,44 @@ class ASRProvider(Protocol):
         """Report readiness and whether an API key is configured."""
         ...
 
+    def transcribe_audio(
+        self,
+        *,
+        audio_bytes: bytes,
+        filename: str,
+        mime_type: str,
+        language_code: str | None = None,
+    ) -> TranscriptionResult:
+        """Transcribe an audio clip and return normalized transcript metadata."""
+        ...
+
+
+class LLMProviderError(RuntimeError):
+    """Safe, key-redacted error raised when structured LLM extraction fails."""
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        user_message: str,
+        http_status: int = 502,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(user_message)
+        self.error_code = error_code
+        self.user_message = user_message
+        self.http_status = http_status
+        self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    """Raw structured extraction response returned by an LLM provider prior to grounding validation."""
+
+    provider: str
+    model: str
+    raw_payload: dict
+
 
 class LLMProvider(Protocol):
     """Structured grievance extraction adapter contract."""
@@ -33,4 +102,8 @@ class LLMProvider(Protocol):
 
     def capability(self) -> ProviderCapability:
         """Report readiness and whether an API key is configured."""
+        ...
+
+    def extract_payment_discrepancy(self, *, approved_transcript: str) -> ExtractionResult:
+        """Extract payment discrepancy facts and exact transcript quotes as strict JSON."""
         ...
