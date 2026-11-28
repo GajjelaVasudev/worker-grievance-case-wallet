@@ -24,6 +24,7 @@ export interface CapabilitiesResponse {
   supported_platforms: string[];
   supported_audio_mime_types: string[];
   max_upload_mb: number;
+  max_audio_duration_seconds: number;
   asr: ProviderStatus;
   llm: ProviderStatus;
 }
@@ -45,8 +46,12 @@ export interface PaymentDiscrepancyDetails {
   expected_amount_inr: number | null;
   received_amount_inr: number | null;
   discrepancy_amount_inr: number | null;
+  currency?: string | null;
+  work_completed_summary?: string | null;
   affected_order_or_trip_ids: string[] | null;
   prior_ticket_id: string | null;
+  support_contact_summary?: string | null;
+  support_response_summary?: string | null;
   issue_description: string | null;
 }
 
@@ -116,6 +121,42 @@ export interface RoutingResult {
   statutory_channels: RoutingChannel[];
 }
 
+export interface VoiceRecording {
+  id: string;
+  case_id: string;
+  recording_order: number;
+  original_filename: string;
+  mime_type: string;
+  codec_name: string | null;
+  size_bytes: number;
+  sha256_hash: string;
+  measured_duration_sec: number;
+  asr_provider: string;
+  asr_model: string | null;
+  asr_request_id: string | null;
+  transcription_status: "pending" | "completed" | "failed" | "key_not_set" | string;
+  transcript_origin:
+    | "demo_sample"
+    | "sarvam_asr"
+    | "sarvam_asr_with_worker_edits"
+    | "manual_worker_entry"
+    | "none"
+    | string;
+  detected_language: string | null;
+  language_probability: number | null;
+  raw_transcript: string | null;
+  asr_transcribed_at: string | null;
+  worker_edited_transcript: string | null;
+  worker_edited_at: string | null;
+  effective_transcript: string | null;
+  is_demo_sample: boolean;
+  sarvam_consent_granted: boolean;
+  sarvam_consented_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
 export interface TimelineEvent {
   id: string;
   event_type: string;
@@ -147,15 +188,52 @@ export interface GrievanceCase {
   evidence_items: EvidenceItem[];
   evidence_checklist: EvidenceChecklist;
   routing: RoutingResult;
+  voice_recordings: VoiceRecording[];
   timeline: TimelineEvent[];
   created_at: string;
   updated_at: string;
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly errorCode: string | null;
+  readonly retryable: boolean;
+  readonly recording?: VoiceRecording;
+
+  constructor(params: {
+    message: string;
+    status: number;
+    errorCode?: string | null;
+    retryable?: boolean;
+    recording?: VoiceRecording;
+  }) {
+    super(params.message);
+    this.name = "ApiError";
+    this.status = params.status;
+    this.errorCode = params.errorCode ?? null;
+    this.retryable = Boolean(params.retryable);
+    this.recording = params.recording;
+  }
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    throw new ApiError({
+      message: "Network failure while contacting the server. Check your connection and try again.",
+      status: 0,
+      errorCode: "network_error",
+      retryable: true,
+    });
+  }
+
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let errorCode: string | null = null;
+    let retryable = false;
+    let recording: VoiceRecording | undefined;
     try {
       const errBody = await response.json();
       if (typeof errBody?.detail === "string") {
@@ -163,10 +241,19 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       } else if (Array.isArray(errBody?.detail) && errBody.detail[0]?.msg) {
         message = errBody.detail[0].msg;
       }
+      if (typeof errBody?.error_code === "string") {
+        errorCode = errBody.error_code;
+      }
+      if (typeof errBody?.retryable === "boolean") {
+        retryable = errBody.retryable;
+      }
+      if (errBody?.recording && typeof errBody.recording === "object") {
+        recording = errBody.recording as VoiceRecording;
+      }
     } catch {
       // keep status fallback
     }
-    throw new Error(message);
+    throw new ApiError({ message, status: response.status, errorCode, retryable, recording });
   }
   return response.json();
 }
@@ -277,6 +364,63 @@ export async function deleteEvidenceFile(caseId: string, evidenceId: string): Pr
     { method: "DELETE" }
   );
   return data.case;
+}
+
+export async function uploadVoiceRecording(
+  caseId: string,
+  file: Blob,
+  filename: string
+): Promise<{ recording: VoiceRecording; case: GrievanceCase }> {
+  const form = new FormData();
+  form.append("file", file, filename);
+  return requestJson<{ recording: VoiceRecording; case: GrievanceCase }>(`/api/cases/${caseId}/voice`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export function getVoiceRecordingAudioUrl(caseId: string, recordingId: string): string {
+  return `/api/cases/${caseId}/voice/${recordingId}/audio`;
+}
+
+export async function transcribeVoiceRecording(
+  caseId: string,
+  recordingId: string,
+  payload: { consent_granted: boolean; language_code?: string | null }
+): Promise<{ recording: VoiceRecording; case: GrievanceCase }> {
+  return requestJson<{ recording: VoiceRecording; case: GrievanceCase }>(
+    `/api/cases/${caseId}/voice/${recordingId}/transcribe`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function updateVoiceTranscript(
+  caseId: string,
+  recordingId: string,
+  workerEditedTranscript: string
+): Promise<{ recording: VoiceRecording; case: GrievanceCase }> {
+  return requestJson<{ recording: VoiceRecording; case: GrievanceCase }>(
+    `/api/cases/${caseId}/voice/${recordingId}/transcript`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ worker_edited_transcript: workerEditedTranscript }),
+    }
+  );
+}
+
+export async function deleteVoiceRecording(
+  caseId: string,
+  recordingId: string
+): Promise<{ deleted: boolean; recording_id: string; case: GrievanceCase }> {
+  return requestJson<{ deleted: boolean; recording_id: string; case: GrievanceCase }>(
+    `/api/cases/${caseId}/voice/${recordingId}`,
+    { method: "DELETE" }
+  );
 }
 
 export async function appendMilestone(
