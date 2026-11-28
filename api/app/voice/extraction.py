@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.models.case import GrievanceCase
 from app.models.voice import CaseExtractionDraft, VoiceRecording
 from app.schemas.case import PaymentDiscrepancyDetails
+from app.voice.grounding import validate_field_value_consistency
 from app.voice.transcription import ConsentRequiredError
 
 
@@ -131,6 +132,19 @@ def validate_and_ground_extraction(
             validated_val = val
 
         if validated_val is None:
+            return None
+
+        consistency_error = validate_field_value_consistency(
+            field_name=target_field,
+            value=validated_val,
+            source_quote=quote,
+        )
+        if consistency_error is not None:
+            stripped_claims[target_field] = {
+                "rejected_value": validated_val,
+                "rejected_quote": quote,
+                "reason": consistency_error,
+            }
             return None
 
         grounded_provenance[target_field] = {
@@ -327,6 +341,20 @@ def extract_draft_from_recording(
 
     merged_model = PaymentDiscrepancyDetails.model_validate(existing_draft)
     combined_missing = detect_missing_payment_fields(merged_model)
+    for field_name, claim in stripped_claims.items():
+        clarification_prompt = (
+            f"Clarification required for '{field_name}': {claim['reason']} "
+            "Please review and enter the correct value if known."
+        )
+        combined_missing.insert(
+            0,
+            {
+                "field": field_name,
+                "importance": "clarification_required",
+                "reason": claim["reason"],
+                "prompt": clarification_prompt,
+            },
+        )
     for gap_text in llm_gaps.get("missing_information", []):
         if not any(gap_text.lower() in item["prompt"].lower() for item in combined_missing):
             combined_missing.append(

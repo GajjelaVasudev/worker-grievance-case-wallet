@@ -87,7 +87,29 @@ def serialize_case(db: Session, case: GrievanceCase) -> dict:
     from app.voice.storage import serialize_voice_recording
 
     active_details = _effective_details_model(case)
+    active_dict = active_details.model_dump()
     missing_fields = detect_missing_payment_fields(active_details)
+    # Surface unresolved grounding/clarification requirements from extraction drafts
+    seen_clarifications = set()
+    for draft in reversed(case.extraction_drafts):
+        for field_name, claim in (draft.stripped_ungrounded_fields or {}).items():
+            if field_name in seen_clarifications:
+                continue
+            if field_name in active_dict and active_dict[field_name] is not None:
+                continue
+            seen_clarifications.add(field_name)
+            missing_fields.insert(
+                0,
+                {
+                    "field": field_name,
+                    "importance": "clarification_required",
+                    "reason": claim.get("reason"),
+                    "prompt": (
+                        f"Clarification required for '{field_name}': {claim.get('reason')} "
+                        "Please review and enter the correct value if known."
+                    ),
+                },
+            )
     checklist = evaluate_evidence_checklist(case.category, list(case.evidence_items))
     routing = match_verified_routes(
         db,
