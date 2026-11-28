@@ -18,6 +18,7 @@ import {
   updateDraftCase,
   uploadEvidenceFile,
 } from "./api/client";
+import { VoiceRecorderPanel } from "./components/VoiceRecorderPanel";
 
 function emptyDetails(platform: PlatformName): PaymentDiscrepancyDetails {
   return {
@@ -157,6 +158,21 @@ function App() {
       prior_ticket_id: editTicketId.trim() || null,
       issue_description: editDescription.trim() || null,
     };
+  }
+
+  async function handleEnsureVoiceDraftCase(): Promise<GrievanceCase> {
+    if (selectedCase) return selectedCase;
+    const created = await createPaymentCase({
+      platform: "other",
+      jurisdiction_state: null,
+      summary_title: null,
+      details: {
+        ...emptyDetails("other"),
+        platform: null,
+      },
+    });
+    replaceCaseInList(created);
+    return created;
   }
 
   async function handleCreateDraft(e: FormEvent) {
@@ -335,7 +351,7 @@ function App() {
             {capabilities?.app_name ?? "Worker Grievance Case Wallet"}
           </h1>
           <p className="text-sm text-slate-600">
-            Phase 2: Payment / Incentive Discrepancy Core Workflow (Voice intake connects in Phase 3)
+            Phase 3: Voice-First Grievance Recording, Sarvam Transcription &amp; Evidence Wallet
           </p>
         </div>
         <div className="text-xs text-slate-700 space-y-1 text-right">
@@ -472,6 +488,17 @@ function App() {
         </section>
 
         <section className="lg:col-span-2 space-y-4">
+          <VoiceRecorderPanel
+            capabilities={capabilities}
+            selectedCase={selectedCase}
+            onEnsureDraftCase={handleEnsureVoiceDraftCase}
+            onCaseUpdated={replaceCaseInList}
+            onClearGlobalMessages={() => {
+              setError(null);
+              setStatusMessage(null);
+            }}
+          />
+
           {!selectedCase ? (
             <div className="rounded border border-slate-300 bg-white p-6 text-sm text-slate-600">
               Select or create a Payment / Incentive Discrepancy case to review details, upload evidence,
