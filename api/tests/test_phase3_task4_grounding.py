@@ -53,7 +53,7 @@ def _gemini_settings(tmp_path) -> Settings:
         sarvam_api_key="",
         llm_provider="gemini",
         gemini_api_key="AIzaSyAuditTestKeyOnly",
-        gemini_model="gemini-3.8-flash",
+        gemini_model="gemini-3.6-flash",
     )
 
 

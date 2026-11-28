@@ -1,4 +1,4 @@
-"""Google Gemini structured extraction adapter (gemini-3.8-flash)."""
+"""Google Gemini structured extraction adapter (gemini-3.6-flash)."""
 
 import json
 
@@ -214,7 +214,7 @@ class GeminiLLMProvider:
                 retryable=False,
             )
 
-        model = (self._settings.gemini_model or "gemini-3.8-flash").strip()
+        model = (self._settings.gemini_model or "gemini-3.6-flash").strip()
         endpoint = f"{GEMINI_API_BASE}/{model}:generateContent"
         api_key = self._settings.gemini_api_key.strip()
 

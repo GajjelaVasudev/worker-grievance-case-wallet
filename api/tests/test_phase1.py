@@ -54,7 +54,20 @@ def test_configured_provider_capabilities():
     assert payload["asr"]["configured"] is True
     assert payload["asr"]["model"] == "saaras:v4"
     assert payload["llm"]["configured"] is True
-    assert payload["llm"]["model"] == "gemini-3.8-flash"
+    assert payload["llm"]["model"] == "gemini-3.6-flash"
+
+
+def test_gemini_model_default_and_env_override(monkeypatch):
+    """Default Gemini model is gemini-3.6-flash and explicit GEMINI_MODEL env overrides it."""
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    default_settings = Settings(_env_file=None, llm_provider="gemini", gemini_api_key="AIzaSyTestExampleKey123")
+    assert default_settings.gemini_model == "gemini-3.6-flash"
+    assert build_capabilities_payload(default_settings)["llm"]["model"] == "gemini-3.6-flash"
+
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    override_settings = Settings(_env_file=None, llm_provider="gemini", gemini_api_key="AIzaSyTestExampleKey123")
+    assert override_settings.gemini_model == "gemini-3.5-flash-lite"
+    assert build_capabilities_payload(override_settings)["llm"]["model"] == "gemini-3.5-flash-lite"
 
 
 def test_health_and_capabilities_routes_without_keys(tmp_path):

@@ -204,7 +204,7 @@ def create_payment_case(db: Session, *, worker_id: str, payload: CreateCaseReque
     provenance = validate_field_provenance(payload.field_provenance, payload.transcript_context)
     details_dict = payload.details.model_dump()
     platform = payload.platform or payload.details.platform or "other"
-    if details_dict.get("platform") is None and payload.platform is not None:
+    if details_dict.get("platform") is None and payload.platform is not None and payload.platform != "other":
         details_dict["platform"] = payload.platform
 
     case_id = str(uuid.uuid4())
