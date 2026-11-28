@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 import uuid
 
+from app.storage.audio_validator import AudioValidationError, validate_audio_bytes
+
 ALLOWED_EVIDENCE_FORMATS: dict[str, str] = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -26,6 +28,19 @@ class StoredFile:
 
     storage_key: str
     mime_type: str
+    size_bytes: int
+    sha256_hash: str
+    sanitized_filename: str
+
+
+@dataclass(frozen=True)
+class StoredAudioFile:
+    """Metadata returned after persisting a validated audio recording."""
+
+    storage_key: str
+    mime_type: str
+    codec_name: str
+    duration_sec: float
     size_bytes: int
     sha256_hash: str
     sanitized_filename: str
@@ -52,11 +67,18 @@ def sanitize_filename(raw_name: str | None) -> str:
 
 
 class LocalStorageService:
-    """Stores evidence files safely inside the configured root volume."""
+    """Stores evidence and audio files safely inside the configured root volume."""
 
-    def __init__(self, root_dir: str, max_upload_mb: int = 10) -> None:
+    def __init__(
+        self,
+        root_dir: str,
+        max_upload_mb: int = 10,
+        max_audio_duration_seconds: float = 30.0,
+    ) -> None:
         self._root = Path(root_dir).resolve()
+        self._max_upload_mb = max_upload_mb
         self._max_bytes = max_upload_mb * 1024 * 1024
+        self._max_audio_duration_seconds = max_audio_duration_seconds
 
     def save_evidence_bytes(
         self,
@@ -102,15 +124,69 @@ class LocalStorageService:
             sanitized_filename=sanitize_filename(original_filename),
         )
 
+    def save_audio_bytes(
+        self,
+        *,
+        case_id: str,
+        recording_id: str,
+        raw_bytes: bytes,
+        original_filename: str | None,
+        declared_content_type: str | None = None,
+    ) -> StoredAudioFile:
+        """Validate actual audio stream/duration/size and save privately per case."""
+        validated = validate_audio_bytes(
+            raw_bytes,
+            max_upload_mb=self._max_upload_mb,
+            max_duration_seconds=self._max_audio_duration_seconds,
+            declared_content_type=declared_content_type,
+        )
+        safe_case = self._safe_id_segment(case_id, "case_id")
+        safe_recording = self._safe_id_segment(recording_id, "recording_id")
+        storage_key = f"{safe_case}/audio/{safe_recording}{validated.extension}"
+        target_path = self.resolve_case_scoped_path(safe_case, storage_key)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(raw_bytes)
+
+        digest = hashlib.sha256(raw_bytes).hexdigest()
+        return StoredAudioFile(
+            storage_key=storage_key,
+            mime_type=validated.mime_type,
+            codec_name=validated.codec_name,
+            duration_sec=validated.duration_sec,
+            size_bytes=validated.size_bytes,
+            sha256_hash=digest,
+            sanitized_filename=sanitize_filename(original_filename or f"recording{validated.extension}"),
+        )
+
+    @staticmethod
+    def _safe_id_segment(raw_id: str, label: str) -> str:
+        cleaned = _SAFE_SEGMENT_RE.sub("", (raw_id or "").strip())
+        if not cleaned or ".." in cleaned or "/" in cleaned or "\\" in cleaned:
+            raise FileValidationError(f"Invalid {label}")
+        return cleaned
+
     def resolve_safe_path(self, storage_key: str) -> Path:
         """Resolve a storage key and prevent directory traversal outside root."""
+        if not storage_key or "\\" in storage_key or storage_key.startswith("/"):
+            raise FileValidationError("Invalid storage key path")
+        if ".." in Path(storage_key).parts:
+            raise FileValidationError("Invalid storage key path")
         candidate = (self._root / storage_key).resolve()
-        if candidate != self._root and self._root not in candidate.parents:
+        if candidate == self._root or self._root not in candidate.parents:
             raise FileValidationError("Invalid storage key path")
         return candidate
 
+    def resolve_case_scoped_path(self, case_id: str, storage_key: str) -> Path:
+        """Resolve a storage key strictly confined to the owning case directory."""
+        safe_case = self._safe_id_segment(case_id, "case_id")
+        candidate = self.resolve_safe_path(storage_key)
+        case_root = (self._root / safe_case).resolve()
+        if case_root not in candidate.parents:
+            raise FileValidationError("Cross-case file access is not permitted")
+        return candidate
+
     def delete_file(self, storage_key: str) -> None:
-        """Delete a stored file if it exists on disk."""
+        """Delete a stored file if it exists on disk without failing when already absent."""
         target = self.resolve_safe_path(storage_key)
         if target.exists() and target.is_file():
             target.unlink()

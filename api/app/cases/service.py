@@ -449,8 +449,10 @@ def append_milestone(db: Session, *, case: GrievanceCase, payload: TimelineMiles
 
 
 def delete_case_and_files(db: Session, *, case: GrievanceCase, storage: LocalStorageService) -> None:
-    """Delete a case and all stored evidence files on disk."""
+    """Delete a case and all stored evidence and voice recording files on disk."""
     for item in case.evidence_items:
         storage.delete_file(item.storage_key)
+    for rec in case.voice_recordings:
+        storage.delete_file(rec.storage_key)
     db.delete(case)
     db.commit()
