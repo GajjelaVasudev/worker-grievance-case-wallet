@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://wallet:wallet@db:5432/grievance_wallet"
     evidence_storage_dir: str = "/data/evidence"
     max_upload_mb: int = 10
+    max_audio_duration_seconds: float = 30.0
 
     asr_provider: str = "none"
     sarvam_api_key: str = ""

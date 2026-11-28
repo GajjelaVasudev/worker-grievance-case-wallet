@@ -64,6 +64,7 @@ def build_capabilities_payload(settings: Settings) -> dict:
         "supported_platforms": ["swiggy", "zomato", "rapido", "uber"],
         "supported_audio_mime_types": list(SARVAM_SUPPORTED_MIME_TYPES),
         "max_upload_mb": settings.max_upload_mb,
+        "max_audio_duration_seconds": settings.max_audio_duration_seconds,
         "asr": asdict(asr_cap),
         "llm": asdict(llm_cap),
     }

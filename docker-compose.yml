@@ -29,6 +29,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://wallet:wallet@db:5432/grievance_wallet}
       EVIDENCE_STORAGE_DIR: ${EVIDENCE_STORAGE_DIR:-/data/evidence}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      MAX_AUDIO_DURATION_SECONDS: ${MAX_AUDIO_DURATION_SECONDS:-30}
       ASR_PROVIDER: ${ASR_PROVIDER:-none}
       SARVAM_API_KEY: ${SARVAM_API_KEY:-}
       SARVAM_STT_MODEL: ${SARVAM_STT_MODEL:-saaras:v4}
