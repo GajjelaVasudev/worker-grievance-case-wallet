@@ -36,7 +36,7 @@ services:
       SARVAM_STT_MODE: ${SARVAM_STT_MODE:-codemix}
       LLM_PROVIDER: ${LLM_PROVIDER:-none}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
     volumes:
       - evidence_data:/data/evidence
     healthcheck:

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     llm_provider: str = "none"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = "gemini-3.6-flash"
 
     @property
     def has_sarvam_key(self) -> bool:
