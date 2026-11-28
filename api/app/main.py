@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api.cases import router as cases_router
 from app.api.health import router as health_router
+from app.api.voice import router as voice_router
 from app.core.config import get_settings
 from app.core.database import SessionLocal, ensure_default_worker
 from app.routing.matcher import ensure_routing_seed
@@ -36,3 +37,4 @@ app = FastAPI(
 )
 app.include_router(health_router)
 app.include_router(cases_router)
+app.include_router(voice_router)
