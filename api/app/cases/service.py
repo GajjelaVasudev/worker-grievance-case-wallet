@@ -83,6 +83,7 @@ def _effective_details_model(case: GrievanceCase) -> PaymentDiscrepancyDetails:
 
 def serialize_case(db: Session, case: GrievanceCase) -> dict:
     """Build complete API representation for a Payment Discrepancy case."""
+    from app.voice.extraction import serialize_extraction_draft
     from app.voice.storage import serialize_voice_recording
 
     active_details = _effective_details_model(case)
@@ -127,6 +128,7 @@ def serialize_case(db: Session, case: GrievanceCase) -> dict:
         "evidence_checklist": checklist,
         "routing": routing,
         "voice_recordings": [serialize_voice_recording(rec) for rec in case.voice_recordings],
+        "extraction_drafts": [serialize_extraction_draft(d) for d in case.extraction_drafts],
         "timeline": [
             {
                 "id": ev.id,

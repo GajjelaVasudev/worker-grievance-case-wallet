@@ -4,13 +4,22 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
-from app.adapters.base import ASRProviderError
+from app.adapters.base import ASRProviderError, LLMProviderError
 from app.cases import service
 from app.core.config import Settings, get_settings
 from app.core.database import ensure_default_worker, get_db
-from app.schemas.voice import TranscribeRecordingRequest, UpdateTranscriptRequest
+from app.schemas.voice import (
+    ExtractDraftRequest,
+    TranscribeRecordingRequest,
+    UpdateTranscriptRequest,
+)
 from app.storage.audio_validator import AudioValidationError
 from app.storage.local_store import FileValidationError, LocalStorageService
+from app.voice.extraction import (
+    TranscriptNotApprovedError,
+    extract_draft_from_recording,
+    serialize_extraction_draft,
+)
 from app.voice.storage import (
     delete_case_recording,
     get_recording_for_case,
@@ -194,6 +203,55 @@ def edit_recording_transcript(
     db.refresh(case)
     return {
         "recording": serialize_voice_recording(updated),
+        "case": service.serialize_case(db, case),
+    }
+
+
+@router.post("/{recording_id}/extract")
+def extract_recording_draft_endpoint(
+    case_id: str,
+    recording_id: str,
+    payload: ExtractDraftRequest,
+    db: Session = Depends(get_db),
+    worker_id: str = Depends(_worker_id),
+    settings: Settings = Depends(get_settings),
+):
+    """Consent- and approval-gated Gemini extraction with quote provenance and conflict checks."""
+    case = service.get_case_or_none(db, case_id=case_id, worker_id=worker_id)
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+
+    recording = get_recording_for_case(db, case_id=case.id, recording_id=recording_id)
+    if recording is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recording not found")
+
+    try:
+        draft = extract_draft_from_recording(
+            db,
+            case=case,
+            recording=recording,
+            settings=settings,
+            consent_granted=payload.consent_granted,
+            transcript_approved_by_worker=payload.transcript_approved_by_worker,
+            transcript_layer=payload.transcript_layer,
+        )
+    except (ConsentRequiredError, TranscriptNotApprovedError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except LLMProviderError as exc:
+        db.refresh(case)
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={
+                "error_code": exc.error_code,
+                "detail": exc.user_message,
+                "retryable": exc.retryable,
+                "case": service.serialize_case(db, case),
+            },
+        )
+
+    db.refresh(case)
+    return {
+        "draft": serialize_extraction_draft(draft),
         "case": service.serialize_case(db, case),
     }
 

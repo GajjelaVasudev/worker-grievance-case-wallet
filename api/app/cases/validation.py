@@ -9,9 +9,11 @@ PAYMENT_FIELD_PROMPTS: tuple[tuple[str, str, str], ...] = (
     ("expected_amount_inr", "important", "How much payout or incentive did you expect (in INR)?"),
     ("received_amount_inr", "important", "How much did you actually receive (in INR)?"),
     ("incentive_scheme_name", "helpful", "What was the name or condition of the incentive/guarantee scheme?"),
+    ("work_completed_summary", "helpful", "What deliveries, rides, or tasks did you complete during that period?"),
     ("work_city", "helpful", "Which city or zone were you working in?"),
     ("affected_order_or_trip_ids", "helpful", "Do you have specific order or trip IDs for the missed payout?"),
-    ("prior_ticket_id", "helpful", "Have you already raised an in-app support ticket? If yes, what is the ticket ID?"),
+    ("support_contact_summary", "helpful", "Have you contacted platform support already, and when?"),
+    ("prior_ticket_id", "helpful", "If you raised a support ticket, what is the ticket ID?"),
 )
 
 
