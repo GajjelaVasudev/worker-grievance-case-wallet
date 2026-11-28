@@ -3,6 +3,7 @@ import {
   ApiError,
   CapabilitiesResponse,
   deleteVoiceRecording,
+  extractVoiceCaseDraft,
   getVoiceRecordingAudioUrl,
   GrievanceCase,
   transcribeVoiceRecording,
@@ -98,6 +99,7 @@ export function VoiceRecorderPanel({
   const maxUploadMb = capabilities?.max_upload_mb ?? DEFAULT_MAX_UPLOAD_MB;
   const maxDurationSeconds = capabilities?.max_audio_duration_seconds ?? DEFAULT_MAX_DURATION_SECONDS;
   const asrConfigured = Boolean(capabilities?.asr.configured);
+  const llmConfigured = Boolean(capabilities?.llm.configured);
   const micSupported = isBrowserRecordingSupported();
 
   const [recorderState, setRecorderState] = useState<"idle" | "recording" | "stopped">("idle");
@@ -114,6 +116,12 @@ export function VoiceRecorderPanel({
   const [deletingIds, setDeletingIds] = useState<Record<string, boolean>>({});
   const [savingTranscriptIds, setSavingTranscriptIds] = useState<Record<string, boolean>>({});
   const [draftEdits, setDraftEdits] = useState<Record<string, string>>({});
+  const [extractLayerByRec, setExtractLayerByRec] = useState<
+    Record<string, "worker_edited_transcript" | "raw_transcript">
+  >({});
+  const [extractConsentByRec, setExtractConsentByRec] = useState<Record<string, boolean>>({});
+  const [extractApprovedByRec, setExtractApprovedByRec] = useState<Record<string, boolean>>({});
+  const [extractingIds, setExtractingIds] = useState<Record<string, boolean>>({});
   const [recordingErrors, setRecordingErrors] = useState<Record<string, string>>({});
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -494,6 +502,73 @@ export function VoiceRecorderPanel({
     }
   }
 
+  async function handleExtractDetails(
+    rec: VoiceRecording,
+    selectedLayer: "worker_edited_transcript" | "raw_transcript"
+  ) {
+    if (!selectedCase || extractingIds[rec.id]) return;
+    onClearGlobalMessages?.();
+    setVoiceError(null);
+    setVoiceStatus(null);
+    setRecordingErrors((prev) => {
+      const next = { ...prev };
+      delete next[rec.id];
+      return next;
+    });
+
+    if (!extractApprovedByRec[rec.id]) {
+      setRecordingErrors((prev) => ({
+        ...prev,
+        [rec.id]: "Please confirm that you reviewed and approved the selected transcript version.",
+      }));
+      return;
+    }
+
+    if (!extractConsentByRec[rec.id]) {
+      setRecordingErrors((prev) => ({
+        ...prev,
+        [rec.id]: "Explicit consent is required before sending transcript text to Gemini.",
+      }));
+      return;
+    }
+
+    setExtractingIds((prev) => ({ ...prev, [rec.id]: true }));
+    try {
+      const res = await extractVoiceCaseDraft(selectedCase.id, rec.id, {
+        consent_granted: true,
+        transcript_approved_by_worker: true,
+        transcript_layer: selectedLayer,
+      });
+      onCaseUpdated(res.case);
+      if (res.draft.extraction_status === "key_not_set") {
+        setRecordingErrors((prev) => ({
+          ...prev,
+          [rec.id]:
+            res.draft.error_message ||
+            "Gemini API key is not configured. Complete or edit fields manually in the review panel below.",
+        }));
+      } else {
+        const groundedCount = Object.keys(res.draft.field_provenance ?? {}).length;
+        const rejectedCount = Object.keys(res.draft.stripped_ungrounded_fields ?? {}).length;
+        const conflictCount = Object.keys(res.draft.conflict_suggestions ?? {}).length;
+        setVoiceStatus(
+          `Extracted case draft from Recording #${rec.recording_order} via ${res.draft.llm_model ?? "gemini-3.6-flash"} ` +
+            `(Supported fields: ${groundedCount}, Rejected unsupported claims: ${rejectedCount}, Conflicts: ${conflictCount}). Review details below before confirming.`
+        );
+      }
+    } catch (err: unknown) {
+      setRecordingErrors((prev) => ({
+        ...prev,
+        [rec.id]: formatVoiceErrorMessage(err, "extract"),
+      }));
+      if (err instanceof ApiError && err.caseData) {
+        onCaseUpdated(err.caseData);
+      }
+    } finally {
+      setExtractingIds((prev) => ({ ...prev, [rec.id]: false }));
+    }
+  }
+
   return (
     <section
       aria-label="Voice Grievance Recording and Transcription"
@@ -685,12 +760,33 @@ export function VoiceRecorderPanel({
                 const isTranscribing = Boolean(transcribingIds[rec.id]);
                 const isDeleting = Boolean(deletingIds[rec.id]);
                 const isSavingTranscript = Boolean(savingTranscriptIds[rec.id]);
+                const isExtracting = Boolean(extractingIds[rec.id]);
                 const consentChecked = Boolean(consentByRec[rec.id]);
                 const recError = recordingErrors[rec.id] || (rec.transcription_status === "failed" ? rec.error_message : null);
                 const draftText = draftEdits[rec.id] ?? rec.worker_edited_transcript ?? rec.raw_transcript ?? "";
+                const hasUnsavedTranscriptChanges =
+                  draftEdits[rec.id] !== undefined &&
+                  draftText.trim() !== (rec.worker_edited_transcript ?? "").trim();
                 const canSaveEdit =
                   draftText.trim().length > 0 &&
                   draftText.trim() !== (rec.worker_edited_transcript ?? "").trim();
+                const hasSavedEdited = Boolean(rec.worker_edited_transcript && rec.worker_edited_transcript.trim());
+                const hasRawTranscript = Boolean(rec.raw_transcript && rec.raw_transcript.trim());
+                const selectedExtractLayer: "worker_edited_transcript" | "raw_transcript" =
+                  extractLayerByRec[rec.id] === "raw_transcript" && hasRawTranscript
+                    ? "raw_transcript"
+                    : extractLayerByRec[rec.id] === "worker_edited_transcript" && hasSavedEdited
+                    ? "worker_edited_transcript"
+                    : hasSavedEdited
+                    ? "worker_edited_transcript"
+                    : "raw_transcript";
+                const extractSelectedText =
+                  selectedExtractLayer === "worker_edited_transcript"
+                    ? rec.worker_edited_transcript ?? ""
+                    : rec.raw_transcript ?? "";
+                const canExtractFromLayer = Boolean(extractSelectedText.trim());
+                const extractApproved = Boolean(extractApprovedByRec[rec.id]);
+                const extractConsent = Boolean(extractConsentByRec[rec.id]);
 
                 return (
                   <li key={rec.id} className="rounded border border-slate-300 p-3 space-y-2.5 bg-slate-50">
@@ -866,6 +962,149 @@ export function VoiceRecorderPanel({
                         </button>
                       </div>
                     </div>
+
+                    {/* Step 4: Consent & Approval-Gated Gemini Extraction */}
+                    {(hasRawTranscript || hasSavedEdited) && (
+                      <div className="rounded border border-slate-300 bg-white p-2.5 space-y-2 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-semibold text-slate-900">
+                            Step 4: Extract Structured Case Details ({capabilities?.llm.model ?? "gemini-3.6-flash"})
+                          </span>
+                          <span
+                            className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+                              llmConfigured
+                                ? "bg-emerald-100 text-emerald-900"
+                                : "bg-amber-100 text-amber-900"
+                            }`}
+                          >
+                            {llmConfigured ? "Gemini Ready" : "Gemini API Key Not Set"}
+                          </span>
+                        </div>
+
+                        {!llmConfigured && (
+                          <p className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">
+                            AI extraction is unavailable without a configured Gemini API key. Results
+                            are never fabricated; complete or edit the structured case fields manually
+                            in the review section below.
+                          </p>
+                        )}
+
+                        <div className="space-y-1">
+                          <div className="font-medium text-slate-800">Select transcript version to extract from:</div>
+                          <div className="flex flex-wrap gap-3">
+                            <label
+                              className={`inline-flex items-center gap-1.5 ${
+                                hasSavedEdited ? "cursor-pointer text-slate-900" : "text-slate-400"
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`extract-layer-${rec.id}`}
+                                value="worker_edited_transcript"
+                                checked={selectedExtractLayer === "worker_edited_transcript"}
+                                disabled={!hasSavedEdited || isExtracting}
+                                onChange={() =>
+                                  setExtractLayerByRec((prev) => ({
+                                    ...prev,
+                                    [rec.id]: "worker_edited_transcript",
+                                  }))
+                                }
+                              />
+                              <span>
+                                {hasRawTranscript ? "Worker-Edited Transcript" : "Manual Worker Transcript"}
+                                {!hasSavedEdited ? " (save above first)" : ""}
+                              </span>
+                            </label>
+
+                            <label
+                              className={`inline-flex items-center gap-1.5 ${
+                                hasRawTranscript ? "cursor-pointer text-slate-900" : "text-slate-400"
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`extract-layer-${rec.id}`}
+                                value="raw_transcript"
+                                checked={selectedExtractLayer === "raw_transcript"}
+                                disabled={!hasRawTranscript || isExtracting}
+                                onChange={() =>
+                                  setExtractLayerByRec((prev) => ({
+                                    ...prev,
+                                    [rec.id]: "raw_transcript",
+                                  }))
+                                }
+                              />
+                              <span>Original Sarvam Transcript (Read-Only)</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {hasUnsavedTranscriptChanges && (
+                          <div className="text-[11px] text-amber-800">
+                            Note: You have unsaved text in the editor above. Click &ldquo;Save Edited Transcript&rdquo;
+                            first if you want extraction to use those edits.
+                          </div>
+                        )}
+
+                        {canExtractFromLayer && (
+                          <div className="rounded bg-slate-50 border border-slate-200 p-2 text-[11px] text-slate-700">
+                            <span className="font-medium text-slate-900">Approved text preview:</span>{" "}
+                            {extractSelectedText}
+                          </div>
+                        )}
+
+                        <label className="flex items-start gap-2 text-slate-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={extractApproved}
+                            disabled={isExtracting}
+                            onChange={(e) =>
+                              setExtractApprovedByRec((prev) => ({ ...prev, [rec.id]: e.target.checked }))
+                            }
+                            className="mt-0.5"
+                          />
+                          <span>
+                            I have reviewed the selected transcript version and approve it for structured case extraction.
+                          </span>
+                        </label>
+
+                        <label className="flex items-start gap-2 text-slate-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={extractConsent}
+                            disabled={isExtracting}
+                            onChange={(e) =>
+                              setExtractConsentByRec((prev) => ({ ...prev, [rec.id]: e.target.checked }))
+                            }
+                            className="mt-0.5"
+                          />
+                          <span>
+                            I explicitly consent to send this approved transcript to Google Gemini (
+                            {capabilities?.llm.model ?? "gemini-3.6-flash"}) to draft case fields.
+                          </span>
+                        </label>
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <span className="text-[11px] text-slate-500">
+                            Extraction drafts fields for review only &mdash; it never auto-confirms your case.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleExtractDetails(rec, selectedExtractLayer)}
+                            disabled={
+                              !llmConfigured ||
+                              !canExtractFromLayer ||
+                              !extractApproved ||
+                              !extractConsent ||
+                              isExtracting
+                            }
+                            className="rounded bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-300 px-3 py-1.5 font-medium text-white"
+                          >
+                            {isExtracting ? "Extracting Case Details..." : "Extract Case Details"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 );
               })}

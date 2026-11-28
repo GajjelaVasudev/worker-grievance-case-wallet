@@ -4,12 +4,14 @@ import {
   appendMilestone,
   CapabilitiesResponse,
   confirmCase,
+  ConflictSuggestion,
   createPaymentCase,
   deleteCase,
   deleteEvidenceFile,
   EvidenceCategory,
   fetchCapabilities,
   fetchHealth,
+  FieldProvenanceEntry,
   GrievanceCase,
   HealthResponse,
   listCases,
@@ -18,7 +20,16 @@ import {
   updateDraftCase,
   uploadEvidenceFile,
 } from "./api/client";
+import { ExtractionReviewSection } from "./components/ExtractionReviewSection";
+import { FieldProvenanceHint } from "./components/FieldProvenanceHint";
 import { VoiceRecorderPanel } from "./components/VoiceRecorderPanel";
+import {
+  collectLatestRejectedClaims,
+  markFieldAsWorkerEdited,
+  recordingOrderMap,
+  resolveConflictIntoDetails,
+  sanitizeProvenanceMap,
+} from "./voice/extractionHelpers";
 
 function emptyDetails(platform: PlatformName): PaymentDiscrepancyDetails {
   return {
@@ -31,8 +42,12 @@ function emptyDetails(platform: PlatformName): PaymentDiscrepancyDetails {
     expected_amount_inr: null,
     received_amount_inr: null,
     discrepancy_amount_inr: null,
+    currency: null,
+    work_completed_summary: null,
     affected_order_or_trip_ids: null,
     prior_ticket_id: null,
+    support_contact_summary: null,
+    support_response_summary: null,
     issue_description: null,
   };
 }
@@ -72,8 +87,14 @@ function App() {
   const [editExpected, setEditExpected] = useState("");
   const [editReceived, setEditReceived] = useState("");
   const [editDiscrepancy, setEditDiscrepancy] = useState("");
+  const [editCurrency, setEditCurrency] = useState("");
+  const [editWorkCompleted, setEditWorkCompleted] = useState("");
+  const [editSupportContact, setEditSupportContact] = useState("");
   const [editTicketId, setEditTicketId] = useState("");
+  const [editSupportResponse, setEditSupportResponse] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [draftProvenance, setDraftProvenance] = useState<Record<string, FieldProvenanceEntry>>({});
+  const [dismissedConflicts, setDismissedConflicts] = useState<Record<string, boolean>>({});
   const [confirmNote, setConfirmNote] = useState("");
   const [amendReason, setAmendReason] = useState("");
 
@@ -116,6 +137,7 @@ function App() {
 
   useEffect(() => {
     setMilestoneEvidenceIds([]);
+    setDismissedConflicts({});
   }, [selectedCase?.id]);
 
   useEffect(() => {
@@ -130,8 +152,13 @@ function App() {
     setEditExpected(active.expected_amount_inr !== null ? String(active.expected_amount_inr) : "");
     setEditReceived(active.received_amount_inr !== null ? String(active.received_amount_inr) : "");
     setEditDiscrepancy(active.discrepancy_amount_inr !== null ? String(active.discrepancy_amount_inr) : "");
+    setEditCurrency(active.currency ?? "");
+    setEditWorkCompleted(active.work_completed_summary ?? "");
+    setEditSupportContact(active.support_contact_summary ?? "");
     setEditTicketId(active.prior_ticket_id ?? "");
+    setEditSupportResponse(active.support_response_summary ?? "");
     setEditDescription(active.issue_description ?? "");
+    setDraftProvenance(selectedCase.field_provenance ?? {});
   }, [selectedCase?.id, selectedCase?.updated_at]);
 
   function replaceCaseInList(updated: GrievanceCase) {
@@ -154,10 +181,19 @@ function App() {
       expected_amount_inr: toNullableNumber(editExpected),
       received_amount_inr: toNullableNumber(editReceived),
       discrepancy_amount_inr: toNullableNumber(editDiscrepancy),
+      currency: editCurrency.trim() || null,
+      work_completed_summary: editWorkCompleted.trim() || null,
       affected_order_or_trip_ids: null,
       prior_ticket_id: editTicketId.trim() || null,
+      support_contact_summary: editSupportContact.trim() || null,
+      support_response_summary: editSupportResponse.trim() || null,
       issue_description: editDescription.trim() || null,
     };
+  }
+
+  function editFieldWithProvenance(fieldName: string, setter: (v: string) => void, value: string) {
+    setter(value);
+    setDraftProvenance((prev) => markFieldAsWorkerEdited(prev, fieldName));
   }
 
   async function handleEnsureVoiceDraftCase(): Promise<GrievanceCase> {
@@ -218,11 +254,39 @@ function App() {
         jurisdiction_state: editJurisdiction.trim() || null,
         summary_title: editTitle.trim() || null,
         details: buildEditedDetails(),
+        field_provenance: sanitizeProvenanceMap(draftProvenance),
       });
       replaceCaseInList(updated);
-      setStatusMessage(`Draft ${updated.case_code} saved.`);
+      setStatusMessage(`Draft ${updated.case_code} saved with field provenance.`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to update draft");
+    }
+  }
+
+  async function handleApplyConflictResolution(conflict: ConflictSuggestion) {
+    if (!selectedCase || selectedCase.status !== "draft") return;
+    setError(null);
+    setStatusMessage(null);
+    const resolved = resolveConflictIntoDetails({
+      details: buildEditedDetails(),
+      provenance: draftProvenance,
+      conflict,
+    });
+    const nextPlatform = resolved.updatedPlatform ?? editPlatform;
+    try {
+      const updated = await updateDraftCase(selectedCase.id, {
+        platform: nextPlatform,
+        jurisdiction_state: editJurisdiction.trim() || null,
+        summary_title: editTitle.trim() || null,
+        details: resolved.updatedDetails,
+        field_provenance: sanitizeProvenanceMap(resolved.updatedProvenance),
+      });
+      replaceCaseInList(updated);
+      setStatusMessage(
+        `Applied conflicting value for '${conflict.field}' to draft (original extraction history preserved).`
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to resolve conflict");
     }
   }
 
@@ -509,14 +573,23 @@ function App() {
               <div className="rounded border border-slate-300 bg-white p-4 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
                   <div>
-                    <h2 className="text-lg font-semibold">
-                      {selectedCase.case_code} &mdash;{" "}
-                      <span className="uppercase text-sm">{selectedCase.status}</span>
+                    <h2 className="text-lg font-semibold flex flex-wrap items-center gap-2">
+                      <span>{selectedCase.case_code}</span>
+                      <span
+                        data-testid="case-status-badge"
+                        className={`rounded px-2 py-0.5 text-xs font-semibold uppercase ${
+                          selectedCase.status === "draft"
+                            ? "bg-amber-100 text-amber-900"
+                            : "bg-emerald-100 text-emerald-900"
+                        }`}
+                      >
+                        {selectedCase.status}
+                      </span>
                     </h2>
                     <p className="text-xs text-slate-600">
                       {selectedCase.confirmed_at
-                        ? `Worker confirmed on ${new Date(selectedCase.confirmed_at).toLocaleString()}`
-                        : "Draft state: requires explicit worker confirmation."}
+                        ? `Worker confirmed locally on ${new Date(selectedCase.confirmed_at).toLocaleString()} (protected against silent AI overwrites).`
+                        : "Draft state: review extracted/manual details, resolve any conflicts, and confirm explicitly."}
                     </p>
                   </div>
                   <button
@@ -528,137 +601,407 @@ function App() {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                  <label className="block">
-                    Platform
-                    <select
-                      value={editPlatform}
-                      onChange={(e) => setEditPlatform(e.target.value as PlatformName)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    >
-                      <option value="swiggy">Swiggy</option>
-                      <option value="zomato">Zomato</option>
-                      <option value="rapido">Rapido</option>
-                      <option value="uber">Uber</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </label>
-                  <label className="block">
-                    Jurisdiction (blank = national)
-                    <input
-                      type="text"
-                      value={editJurisdiction}
-                      onChange={(e) => setEditJurisdiction(e.target.value)}
-                      placeholder="national (or state name)"
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Summary Title
-                    <input
-                      type="text"
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    City
-                    <input
-                      type="text"
-                      value={editCity}
-                      onChange={(e) => setEditCity(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Payout Cycle
-                    <input
-                      type="text"
-                      value={editCycleRaw}
-                      onChange={(e) => setEditCycleRaw(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Incentive Scheme
-                    <input
-                      type="text"
-                      value={editScheme}
-                      onChange={(e) => setEditScheme(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Expected INR
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={editExpected}
-                      onChange={(e) => setEditExpected(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Received INR
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={editReceived}
-                      onChange={(e) => setEditReceived(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Discrepancy INR (optional)
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={editDiscrepancy}
-                      onChange={(e) => setEditDiscrepancy(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                  <label className="block">
-                    Prior Ticket ID (optional)
-                    <input
-                      type="text"
-                      value={editTicketId}
-                      onChange={(e) => setEditTicketId(e.target.value)}
-                      className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                    />
-                  </label>
-                </div>
-                <label className="block text-xs">
-                  Issue Description
-                  <textarea
-                    rows={2}
-                    value={editDescription}
-                    onChange={(e) => setEditDescription(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
-                  />
-                </label>
-
-                {selectedCase.missing_fields.length > 0 && (
-                  <div className="rounded bg-amber-50 border border-amber-200 p-2 text-xs text-amber-900">
+                {selectedCase.status !== "draft" && (
+                  <div
+                    data-testid="confirmed-case-banner"
+                    className="rounded border border-emerald-300 bg-emerald-50 p-2.5 text-xs text-emerald-950 space-y-0.5"
+                  >
                     <div className="font-semibold">
-                      Unfilled / Null Fields ({selectedCase.missing_fields.length}):
+                      Case Details Confirmed Locally ({selectedCase.status})
                     </div>
-                    <ul className="list-disc pl-4 mt-1">
-                      {selectedCase.missing_fields.map((m) => (
-                        <li key={m.field}>
-                          <code>{m.field}</code> ({m.importance}): {m.prompt}
-                        </li>
-                      ))}
-                    </ul>
+                    <div>
+                      Confirmed facts are locked against automatic extraction overwrites. Later recordings
+                      flag suggestions only; changes require the explicit &ldquo;Amend Confirmed Case&rdquo; action below.
+                      {selectedCase.worker_confirmation_note
+                        ? ` Note: "${selectedCase.worker_confirmation_note}"`
+                        : ""}
+                    </div>
                   </div>
                 )}
 
+                <ExtractionReviewSection
+                  capabilities={capabilities}
+                  selectedCase={selectedCase}
+                  dismissedConflictKeys={dismissedConflicts}
+                  onDismissConflict={(key) =>
+                    setDismissedConflicts((prev) => ({ ...prev, [key]: true }))
+                  }
+                  onApplyConflict={handleApplyConflictResolution}
+                />
+
+                {(() => {
+                  const recOrderById = recordingOrderMap(selectedCase.voice_recordings ?? []);
+                  const rejectedByField = collectLatestRejectedClaims(
+                    selectedCase.extraction_drafts ?? [],
+                    selectedCase.voice_recordings ?? []
+                  );
+                  return (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                        <label className="block">
+                          Platform
+                          <select
+                            value={editPlatform}
+                            onChange={(e) => {
+                              const next = e.target.value as PlatformName;
+                              setEditPlatform(next);
+                              setDraftProvenance((prev) => markFieldAsWorkerEdited(prev, "platform"));
+                            }}
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          >
+                            <option value="swiggy">Swiggy</option>
+                            <option value="zomato">Zomato</option>
+                            <option value="rapido">Rapido</option>
+                            <option value="uber">Uber</option>
+                            <option value="other">Other</option>
+                          </select>
+                          <FieldProvenanceHint
+                            fieldName="platform"
+                            isEmpty={!editPlatform || editPlatform === "other"}
+                            provenance={draftProvenance.platform}
+                            rejectedClaim={rejectedByField.platform}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <div className="block">
+                          <span>Grievance Category</span>
+                          <div className="mt-1 w-full rounded border border-slate-200 bg-slate-50 p-1.5 text-sm text-slate-800">
+                            {selectedCase.category} (Payment / Incentive Discrepancy)
+                          </div>
+                          <FieldProvenanceHint
+                            fieldName="grievance_category"
+                            isEmpty={!selectedCase.category}
+                            provenance={draftProvenance.grievance_category}
+                            rejectedClaim={rejectedByField.grievance_category}
+                            recordingOrderById={recOrderById}
+                          />
+                        </div>
+
+                        <label className="block">
+                          Disputed Amount
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={editDiscrepancy}
+                            onChange={(e) =>
+                              editFieldWithProvenance("discrepancy_amount_inr", setEditDiscrepancy, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="discrepancy_amount_inr"
+                            isEmpty={!editDiscrepancy.trim()}
+                            provenance={draftProvenance.discrepancy_amount_inr}
+                            rejectedClaim={rejectedByField.discrepancy_amount_inr}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Currency
+                          <input
+                            type="text"
+                            value={editCurrency}
+                            onChange={(e) =>
+                              editFieldWithProvenance("currency", setEditCurrency, e.target.value)
+                            }
+                            placeholder="e.g. INR, rupees (unknown if blank)"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="currency"
+                            isEmpty={!editCurrency.trim()}
+                            provenance={draftProvenance.currency}
+                            rejectedClaim={rejectedByField.currency}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Payout Period
+                          <input
+                            type="text"
+                            value={editCycleRaw}
+                            onChange={(e) =>
+                              editFieldWithProvenance("payout_cycle_raw", setEditCycleRaw, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="payout_cycle_raw"
+                            isEmpty={!editCycleRaw.trim()}
+                            provenance={draftProvenance.payout_cycle_raw}
+                            rejectedClaim={rejectedByField.payout_cycle_raw}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Incentive Scheme
+                          <input
+                            type="text"
+                            value={editScheme}
+                            onChange={(e) =>
+                              editFieldWithProvenance("incentive_scheme_name", setEditScheme, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="incentive_scheme_name"
+                            isEmpty={!editScheme.trim()}
+                            provenance={draftProvenance.incentive_scheme_name}
+                            rejectedClaim={rejectedByField.incentive_scheme_name}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Expected Payment (INR)
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={editExpected}
+                            onChange={(e) =>
+                              editFieldWithProvenance("expected_amount_inr", setEditExpected, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="expected_amount_inr"
+                            isEmpty={!editExpected.trim()}
+                            provenance={draftProvenance.expected_amount_inr}
+                            rejectedClaim={rejectedByField.expected_amount_inr}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Actual Payment Received (INR)
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={editReceived}
+                            onChange={(e) =>
+                              editFieldWithProvenance("received_amount_inr", setEditReceived, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="received_amount_inr"
+                            isEmpty={!editReceived.trim()}
+                            provenance={draftProvenance.received_amount_inr}
+                            rejectedClaim={rejectedByField.received_amount_inr}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Work Completed Summary
+                          <input
+                            type="text"
+                            value={editWorkCompleted}
+                            onChange={(e) =>
+                              editFieldWithProvenance("work_completed_summary", setEditWorkCompleted, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="work_completed_summary"
+                            isEmpty={!editWorkCompleted.trim()}
+                            provenance={draftProvenance.work_completed_summary}
+                            rejectedClaim={rejectedByField.work_completed_summary}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          City / Work Zone
+                          <input
+                            type="text"
+                            value={editCity}
+                            onChange={(e) =>
+                              editFieldWithProvenance("work_city", setEditCity, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="work_city"
+                            isEmpty={!editCity.trim()}
+                            provenance={draftProvenance.work_city}
+                            rejectedClaim={rejectedByField.work_city}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Previous Support Contacts
+                          <input
+                            type="text"
+                            value={editSupportContact}
+                            onChange={(e) =>
+                              editFieldWithProvenance("support_contact_summary", setEditSupportContact, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="support_contact_summary"
+                            isEmpty={!editSupportContact.trim()}
+                            provenance={draftProvenance.support_contact_summary}
+                            rejectedClaim={rejectedByField.support_contact_summary}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Previous Ticket ID
+                          <input
+                            type="text"
+                            value={editTicketId}
+                            onChange={(e) =>
+                              editFieldWithProvenance("prior_ticket_id", setEditTicketId, e.target.value)
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="prior_ticket_id"
+                            isEmpty={!editTicketId.trim()}
+                            provenance={draftProvenance.prior_ticket_id}
+                            rejectedClaim={rejectedByField.prior_ticket_id}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block sm:col-span-2">
+                          Support Response Summary
+                          <input
+                            type="text"
+                            value={editSupportResponse}
+                            onChange={(e) =>
+                              editFieldWithProvenance(
+                                "support_response_summary",
+                                setEditSupportResponse,
+                                e.target.value
+                              )
+                            }
+                            placeholder="Unknown"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                          <FieldProvenanceHint
+                            fieldName="support_response_summary"
+                            isEmpty={!editSupportResponse.trim()}
+                            provenance={draftProvenance.support_response_summary}
+                            rejectedClaim={rejectedByField.support_response_summary}
+                            recordingOrderById={recOrderById}
+                          />
+                        </label>
+
+                        <label className="block">
+                          Jurisdiction (blank = national)
+                          <input
+                            type="text"
+                            value={editJurisdiction}
+                            onChange={(e) => setEditJurisdiction(e.target.value)}
+                            placeholder="national (or state name)"
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                        </label>
+
+                        <label className="block">
+                          Summary Title (optional)
+                          <input
+                            type="text"
+                            value={editTitle}
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                          />
+                        </label>
+                      </div>
+
+                      <label className="block text-xs">
+                        Issue Description
+                        <textarea
+                          rows={2}
+                          value={editDescription}
+                          onChange={(e) =>
+                            editFieldWithProvenance("issue_description", setEditDescription, e.target.value)
+                          }
+                          placeholder="Describe the payment or incentive discrepancy"
+                          className="mt-1 w-full rounded border border-slate-300 p-1.5 text-sm"
+                        />
+                        <FieldProvenanceHint
+                          fieldName="issue_description"
+                          isEmpty={!editDescription.trim()}
+                          provenance={draftProvenance.issue_description}
+                          rejectedClaim={rejectedByField.issue_description}
+                          recordingOrderById={recOrderById}
+                        />
+                      </label>
+                    </>
+                  );
+                })()}
+
                 {selectedCase.status === "draft" ? (
-                  <div className="space-y-2 border-t pt-2">
+                  <div className="space-y-2.5 border-t pt-3">
+                    <div
+                      data-testid="pre-confirmation-summary"
+                      className="rounded border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-1"
+                    >
+                      <div className="font-semibold text-slate-900">
+                        Case Summary Before Confirmation ({selectedCase.case_code})
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] text-slate-700">
+                        <div>Platform: <strong>{editPlatform}</strong></div>
+                        <div>Category: <strong>{selectedCase.category}</strong></div>
+                        <div>
+                          Disputed amount:{" "}
+                          <strong>
+                            {editDiscrepancy.trim()
+                              ? `${editDiscrepancy} ${editCurrency || "INR"}`
+                              : "Unknown / null"}
+                          </strong>
+                        </div>
+                        <div>Payout period: <strong>{editCycleRaw.trim() || "Unknown / null"}</strong></div>
+                        <div>
+                          Expected / Received:{" "}
+                          <strong>
+                            {editExpected.trim() || "Unknown"} / {editReceived.trim() || "Unknown"}
+                          </strong>
+                        </div>
+                        <div>
+                          Incentive scheme: <strong>{editScheme.trim() || "Unknown / null"}</strong>
+                        </div>
+                        <div>
+                          Support contacts / Ticket:{" "}
+                          <strong>
+                            {editSupportContact.trim() || "Unknown"} ({editTicketId.trim() || "No ticket ID"})
+                          </strong>
+                        </div>
+                        <div>
+                          Work completed: <strong>{editWorkCompleted.trim() || "Unknown / null"}</strong>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-slate-700">
+                        Issue: <strong>{editDescription.trim() || "Missing (required before confirmation)"}</strong>
+                      </div>
+                      <div className="text-[11px] text-slate-600 italic">
+                        Confirming approves these details inside your local Grievance Wallet only &mdash; it
+                        does NOT submit a complaint to any platform.
+                      </div>
+                    </div>
+
                     <input
                       type="text"
                       placeholder="Optional worker confirmation note"
@@ -677,7 +1020,7 @@ function App() {
                       <button
                         type="button"
                         onClick={handleConfirmCase}
-                        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white"
+                        className="rounded bg-emerald-700 hover:bg-emerald-800 px-3 py-1.5 text-sm font-medium text-white"
                       >
                         Confirm Case Details
                       </button>
