@@ -55,10 +55,53 @@ export interface PaymentDiscrepancyDetails {
   issue_description: string | null;
 }
 
+export interface FieldProvenanceEntry {
+  origin: "worker_input" | "transcript_quote" | "worker_edited" | "llm_extracted";
+  source_quote: string | null;
+  voice_recording_id: string | null;
+  transcript_layer: "raw_transcript" | "worker_edited_transcript" | null;
+  value?: unknown;
+}
+
+export interface StrippedClaimEntry {
+  rejected_value: unknown;
+  rejected_quote: string | null;
+  reason: string;
+}
+
+export interface ConflictSuggestion {
+  field: string;
+  existing_value: unknown;
+  existing_provenance: FieldProvenanceEntry | null;
+  proposed_value: unknown;
+  proposed_provenance: FieldProvenanceEntry | null;
+}
+
+export interface ExtractionDraft {
+  id: string;
+  case_id: string;
+  voice_recording_id: string;
+  source_transcript_layer: "worker_edited_transcript" | "raw_transcript" | string;
+  source_transcript_snapshot: string;
+  llm_provider: string;
+  llm_model: string | null;
+  extraction_status: "completed" | "failed" | "key_not_set" | string;
+  gemini_consent_granted: boolean;
+  gemini_consented_at: string | null;
+  extracted_fields: Record<string, unknown> | null;
+  field_provenance: Record<string, FieldProvenanceEntry> | null;
+  stripped_ungrounded_fields: Record<string, StrippedClaimEntry> | null;
+  conflict_suggestions: Record<string, ConflictSuggestion> | null;
+  missing_fields: MissingFieldItem[] | null;
+  error_message: string | null;
+  created_at: string;
+}
+
 export interface MissingFieldItem {
   field: string;
   importance: string;
   prompt: string;
+  reason?: string | null;
 }
 
 export interface EvidenceItem {
@@ -181,6 +224,7 @@ export interface GrievanceCase {
   status: string;
   summary_title: string | null;
   draft_details: PaymentDiscrepancyDetails | null;
+  field_provenance: Record<string, FieldProvenanceEntry> | null;
   confirmed_details: PaymentDiscrepancyDetails | null;
   confirmed_at: string | null;
   worker_confirmation_note: string | null;
@@ -189,6 +233,7 @@ export interface GrievanceCase {
   evidence_checklist: EvidenceChecklist;
   routing: RoutingResult;
   voice_recordings: VoiceRecording[];
+  extraction_drafts: ExtractionDraft[];
   timeline: TimelineEvent[];
   created_at: string;
   updated_at: string;
@@ -199,6 +244,7 @@ export class ApiError extends Error {
   readonly errorCode: string | null;
   readonly retryable: boolean;
   readonly recording?: VoiceRecording;
+  readonly caseData?: GrievanceCase;
 
   constructor(params: {
     message: string;
@@ -206,6 +252,7 @@ export class ApiError extends Error {
     errorCode?: string | null;
     retryable?: boolean;
     recording?: VoiceRecording;
+    caseData?: GrievanceCase;
   }) {
     super(params.message);
     this.name = "ApiError";
@@ -213,6 +260,7 @@ export class ApiError extends Error {
     this.errorCode = params.errorCode ?? null;
     this.retryable = Boolean(params.retryable);
     this.recording = params.recording;
+    this.caseData = params.caseData;
   }
 }
 
@@ -234,6 +282,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
     let errorCode: string | null = null;
     let retryable = false;
     let recording: VoiceRecording | undefined;
+    let caseData: GrievanceCase | undefined;
     try {
       const errBody = await response.json();
       if (typeof errBody?.detail === "string") {
@@ -250,10 +299,13 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       if (errBody?.recording && typeof errBody.recording === "object") {
         recording = errBody.recording as VoiceRecording;
       }
+      if (errBody?.case && typeof errBody.case === "object") {
+        caseData = errBody.case as GrievanceCase;
+      }
     } catch {
       // keep status fallback
     }
-    throw new ApiError({ message, status: response.status, errorCode, retryable, recording });
+    throw new ApiError({ message, status: response.status, errorCode, retryable, recording, caseData });
   }
   return response.json();
 }
@@ -292,6 +344,8 @@ export async function updateDraftCase(
     jurisdiction_state: string | null;
     summary_title: string | null;
     details: PaymentDiscrepancyDetails;
+    field_provenance?: Record<string, FieldProvenanceEntry> | null;
+    transcript_context?: string | null;
   }
 ): Promise<GrievanceCase> {
   const data = await requestJson<{ case: GrievanceCase }>(`/api/cases/${caseId}/draft`, {
@@ -409,6 +463,25 @@ export async function updateVoiceTranscript(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ worker_edited_transcript: workerEditedTranscript }),
+    }
+  );
+}
+
+export async function extractVoiceCaseDraft(
+  caseId: string,
+  recordingId: string,
+  payload: {
+    consent_granted: boolean;
+    transcript_approved_by_worker: boolean;
+    transcript_layer: "worker_edited_transcript" | "raw_transcript";
+  }
+): Promise<{ draft: ExtractionDraft; case: GrievanceCase }> {
+  return requestJson<{ draft: ExtractionDraft; case: GrievanceCase }>(
+    `/api/cases/${caseId}/voice/${recordingId}/extract`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }
   );
 }
