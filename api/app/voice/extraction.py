@@ -188,6 +188,21 @@ def validate_and_ground_extraction(
     return details_model, grounded_provenance, stripped_claims, llm_gaps
 
 
+def _is_unconfirmed_default_value(
+    *,
+    field_name: str,
+    existing_val: object,
+    existing_provenance: dict | None,
+    case: GrievanceCase,
+) -> bool:
+    """Treat unconfirmed system placeholder defaults (such as platform='other') as unset during merge."""
+    if case.status != "draft" or case.confirmed_details is not None:
+        return False
+    if field_name == "platform" and existing_val == "other":
+        return existing_provenance is None
+    return False
+
+
 def extract_draft_from_recording(
     db: Session,
     *,
@@ -318,6 +333,7 @@ def extract_draft_from_recording(
 
     extracted_dict = extracted_model.model_dump()
     existing_draft = dict(case.draft_details or PaymentDiscrepancyDetails().model_dump())
+    active_baseline = dict(case.confirmed_details if case.confirmed_details is not None else existing_draft)
     existing_prov = dict(case.field_provenance or {})
     conflicts: dict[str, dict] = {}
 
@@ -325,11 +341,19 @@ def extract_draft_from_recording(
         if new_val is None:
             continue
         new_prov = grounded_prov.get(field_name)
-        existing_val = existing_draft.get(field_name)
+        existing_val = active_baseline.get(field_name)
+        if _is_unconfirmed_default_value(
+            field_name=field_name,
+            existing_val=existing_val,
+            existing_provenance=existing_prov.get(field_name),
+            case=case,
+        ):
+            existing_val = None
         if existing_val is None:
-            existing_draft[field_name] = new_val
-            if new_prov is not None:
-                existing_prov[field_name] = new_prov
+            if case.status == "draft":
+                existing_draft[field_name] = new_val
+                if new_prov is not None:
+                    existing_prov[field_name] = new_prov
         elif existing_val != new_val:
             conflicts[field_name] = {
                 "field": field_name,
@@ -339,7 +363,9 @@ def extract_draft_from_recording(
                 "proposed_provenance": new_prov,
             }
 
-    merged_model = PaymentDiscrepancyDetails.model_validate(existing_draft)
+    merged_model = PaymentDiscrepancyDetails.model_validate(
+        existing_draft if case.status == "draft" else active_baseline
+    )
     combined_missing = detect_missing_payment_fields(merged_model)
     for field_name, claim in stripped_claims.items():
         clarification_prompt = (
