@@ -119,7 +119,7 @@ def test_successful_gemini_extraction_provenance_and_draft_state(tmp_path):
         {
             "platform": {"value": "swiggy", "source_quote": "Swiggy"},
             "grievance_category": {"value": "payment_discrepancy", "source_quote": "weekly payout for last week is missing 850 rupees"},
-            "short_issue_summary": {"value": "Missing Rs 850 on Swiggy weekly payout", "source_quote": "weekly payout for last week is missing 850 rupees"},
+            "short_issue_summary": {"value": "Missing Rs 850 on Swiggy weekly payout", "source_quote": "My Swiggy weekly payout for last week is missing 850 rupees"},
             "disputed_amount": {"value": 850, "source_quote": "missing 850 rupees"},
             "currency": {"value": "rupees", "source_quote": "850 rupees"},
             "relevant_period": {"value": "last week", "source_quote": "last week"},
