@@ -3,7 +3,9 @@
 from app.adapters.base import (
     ASRProvider,
     ASRProviderError,
+    ExtractionResult,
     LLMProvider,
+    LLMProviderError,
     ProviderCapability,
     TranscriptionResult,
 )
@@ -13,7 +15,9 @@ from app.adapters.sarvam_asr import SarvamASRProvider
 __all__ = [
     "ASRProvider",
     "ASRProviderError",
+    "ExtractionResult",
     "LLMProvider",
+    "LLMProviderError",
     "ProviderCapability",
     "TranscriptionResult",
     "SarvamASRProvider",

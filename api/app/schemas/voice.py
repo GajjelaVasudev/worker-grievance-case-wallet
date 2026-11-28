@@ -1,4 +1,6 @@
-"""Pydantic schemas for voice recording upload, Sarvam transcription, and transcript edits."""
+"""Pydantic schemas for voice recording upload, Sarvam transcription, transcript edits, and extraction."""
+
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,3 +31,11 @@ class UpdateTranscriptRequest(BaseModel):
     def strip_text(cls, value: str) -> str:
         """Trim surrounding whitespace before validation."""
         return (value or "").strip()
+
+
+class ExtractDraftRequest(BaseModel):
+    """Explicit consent and worker-approval payload required before calling Gemini extraction."""
+
+    consent_granted: bool
+    transcript_approved_by_worker: bool
+    transcript_layer: Literal["worker_edited_transcript", "raw_transcript"] = "worker_edited_transcript"

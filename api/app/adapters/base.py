@@ -68,6 +68,33 @@ class ASRProvider(Protocol):
         ...
 
 
+class LLMProviderError(RuntimeError):
+    """Safe, key-redacted error raised when structured LLM extraction fails."""
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        user_message: str,
+        http_status: int = 502,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(user_message)
+        self.error_code = error_code
+        self.user_message = user_message
+        self.http_status = http_status
+        self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    """Raw structured extraction response returned by an LLM provider prior to grounding validation."""
+
+    provider: str
+    model: str
+    raw_payload: dict
+
+
 class LLMProvider(Protocol):
     """Structured grievance extraction adapter contract."""
 
@@ -75,4 +102,8 @@ class LLMProvider(Protocol):
 
     def capability(self) -> ProviderCapability:
         """Report readiness and whether an API key is configured."""
+        ...
+
+    def extract_payment_discrepancy(self, *, approved_transcript: str) -> ExtractionResult:
+        """Extract payment discrepancy facts and exact transcript quotes as strict JSON."""
         ...

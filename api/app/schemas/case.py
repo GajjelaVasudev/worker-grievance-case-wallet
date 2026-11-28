@@ -44,8 +44,12 @@ class PaymentDiscrepancyDetails(BaseModel):
     expected_amount_inr: float | None = Field(default=None, ge=0)
     received_amount_inr: float | None = Field(default=None, ge=0)
     discrepancy_amount_inr: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    work_completed_summary: str | None = None
     affected_order_or_trip_ids: list[str] | None = None
     prior_ticket_id: str | None = None
+    support_contact_summary: str | None = None
+    support_response_summary: str | None = None
     issue_description: str | None = None
 
     @field_validator(
@@ -54,7 +58,11 @@ class PaymentDiscrepancyDetails(BaseModel):
         "payout_cycle_start",
         "payout_cycle_end",
         "incentive_scheme_name",
+        "currency",
+        "work_completed_summary",
         "prior_ticket_id",
+        "support_contact_summary",
+        "support_response_summary",
         "issue_description",
         mode="before",
     )
@@ -95,8 +103,10 @@ class PaymentDiscrepancyDetails(BaseModel):
 class FieldProvenance(BaseModel):
     """Provenance record for a draft or extracted field."""
 
-    origin: Literal["worker_input", "transcript_quote", "worker_edited"]
+    origin: Literal["worker_input", "transcript_quote", "worker_edited", "llm_extracted"]
     source_quote: str | None = None
+    voice_recording_id: str | None = None
+    transcript_layer: Literal["raw_transcript", "worker_edited_transcript"] | None = None
 
 
 class CreateCaseRequest(BaseModel):
