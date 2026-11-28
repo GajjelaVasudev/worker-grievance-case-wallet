@@ -67,7 +67,7 @@ def _gemini_settings(tmp_path) -> Settings:
         sarvam_api_key="",
         llm_provider="gemini",
         gemini_api_key="AIzaSyFakeGeminiTestKey999",
-        gemini_model="gemini-3.8-flash",
+        gemini_model="gemini-3.6-flash",
     )
 
 
@@ -173,7 +173,7 @@ def test_successful_gemini_extraction_provenance_and_draft_state(tmp_path):
 
         assert len(captured) == 1
         req = captured[0]
-        assert str(req.url) == f"{GEMINI_API_BASE}/gemini-3.8-flash:generateContent"
+        assert str(req.url) == f"{GEMINI_API_BASE}/gemini-3.6-flash:generateContent"
         assert req.headers["x-goog-api-key"] == "AIzaSyFakeGeminiTestKey999"
         req_body = json.loads(req.read())
         assert req_body["generationConfig"]["responseMimeType"] == "application/json"
@@ -181,7 +181,7 @@ def test_successful_gemini_extraction_provenance_and_draft_state(tmp_path):
 
         assert draft.extraction_status == "completed"
         assert draft.llm_provider == "gemini"
-        assert draft.llm_model == "gemini-3.8-flash"
+        assert draft.llm_model == "gemini-3.6-flash"
         assert draft.source_transcript_layer == "worker_edited_transcript"
         assert draft.stripped_ungrounded_fields is None
         assert draft.extracted_fields["discrepancy_amount_inr"] == 850
